@@ -1,100 +1,216 @@
-import os
-import subprocess
-import sys
-import winreg
-import secrets
-import string
-import requests
+name: RDP
 
-def is_admin():
-    """التحقق مما إذا كان السكربت يعمل بصلاحيات المسؤول"""
-    try:
-        return os.getuid() == 0
-    except AttributeError:
-        import ctypes
-        return ctypes.windll.shell32.IsUserAnAdmin() != 0
 
-def set_registry_key(path, name, value):
-    """تعديل قيم الريجستري لإعدادات RDP"""
-    try:
-        key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, path, 0, winreg.KEY_SET_VALUE)
-        winreg.SetValueEx(key, name, 0, winreg.REG_DWORD, value)
-        winreg.CloseKey(key)
-        print(f"[+] تم تحديث الريجستري: {name} = {value}")
-    except Exception as e:
-        print(f"[-] خطأ في تحديث الريجستري: {e}")
+on:
 
-def configure_rdp():
-    """إعدادات RDP الأساسية والجدار الناري"""
-    print("[*] جاري إعداد RDP...")
-    # تمكين RDP وتعطيل NLA (Network Level Authentication) للتبسيط
-    path = r"System\CurrentControlSet\Control\Terminal Server"
-    set_registry_key(path, "fDenyTSConnections", 0)
-    
-    path_tcp = r"System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp"
-    set_registry_key(path_tcp, "UserAuthentication", 0)
-    set_registry_key(path_tcp, "SecurityLayer", 0)
+  workflow_dispatch:
 
-    # إعداد الجدار الناري (Firewall)
-    subprocess.run(['netsh', 'advfirewall', 'firewall', 'delete', 'rule', 'name=RDP-Python'], capture_output=True)
-    subprocess.run(['netsh', 'advfirewall', 'firewall', 'add', 'rule', 'name=RDP-Python', 
-                    'dir=in', 'action=allow', 'protocol=TCP', 'localport=3389'], check=True)
-    print("[+] تم فتح المنفذ 3389 في الجدار الناري.")
 
-def generate_password(length=16):
-    """توليد كلمة مرور قوية وعشوائية"""
-    alphabet = string.ascii_letters + string.digits + "!@#$%^&*"
-    return ''.join(secrets.choice(alphabet) for i in range(length))
+jobs:
 
-def create_rdp_user(username, password):
-    """إنشاء مستخدم جديد وإضافته لمجموعات المسؤولين و RDP"""
-    try:
-        # إنشاء المستخدم
-        subprocess.run(['net', 'user', username, password, '/add', '/expires:never'], check=True)
-        # إضافة للمسؤولين
-        subprocess.run(['net', 'localgroup', 'Administrators', username, '/add'], check=True)
-        # إضافة لمستخدمي سطح المكتب البعيد
-        subprocess.run(['net', 'localgroup', 'Remote Desktop Users', username, '/add'], check=True)
-        print(f"[+] تم إنشاء المستخدم: {username}")
-        print(f"[!] كلمة المرور: {password}")
-    except Exception as e:
-        print(f"[-] فشل إنشاء المستخدم: {e}")
+  secure-rdp:
 
-def install_tailscale(auth_key=None):
-    """تحميل وتثبيت Tailscale والاتصال به"""
-    url = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
-    installer = os.path.join(os.environ['TEMP'], "tailscale.msi")
-    
-    print("[*] جاري تحميل Tailscale...")
-    response = requests.get(url)
-    with open(installer, 'wb') as f:
-        f.write(response.content)
-    
-    print("[*] جاري التثبيت الصامت...")
-    subprocess.run(['msiexec.exe', '/i', installer, '/quiet', '/norestart'], check=True)
-    
-    if auth_key:
-        print("[*] جاري الاتصال بـ Tailscale...")
-        ts_path = os.path.join(os.environ['ProgramFiles'], "Tailscale", "tailscale.exe")
-        subprocess.run([ts_path, 'up', '--authkey=' + auth_key], check=True)
+    runs-on: windows-latest
 
-if __name__ == "__main__":
-    if not is_admin():
-        print("[-] يرجى تشغيل السكربت كمسؤول (Run as Administrator)!")
-        sys.exit(1)
+    timeout-minutes: 3600
 
-    # تنفيذ العمليات
-    configure_rdp()
-    
-    user = "RDP_User"
-    pwd = generate_password()
-    create_rdp_user(user, pwd)
-    
-    # اختياري: تثبيت Tailscale إذا أردت (يتطلب مفتاح Auth Key)
-    # install_tailscale(auth_key="YOUR_KEY_HERE")
 
-    print("\n" + "="*30)
-    print("✅ اكتمل الإعداد بنجاح!")
-    print(f"اسم المستخدم: {user}")
-    print(f"كلمة المرور: {pwd}")
-    print("="*30)
+    steps:
+
+      - name: Configure Core RDP Settings
+
+        run: |
+
+          # Enable Remote Desktop and disable Network Level Authentication (if needed)
+
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
+
+                             -Name "fDenyTSConnections" -Value 0 -Force
+
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+
+                             -Name "UserAuthentication" -Value 0 -Force
+
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+
+                             -Name "SecurityLayer" -Value 0 -Force
+
+
+          # Remove any existing rule with the same name to avoid duplication
+
+          netsh advfirewall firewall delete rule name="RDP-Tailscale"
+
+         
+
+          # For testing, allow any incoming connection on port 3389
+
+          netsh advfirewall firewall add rule name="RDP-Tailscale" `
+
+            dir=in action=allow protocol=TCP localport=3389
+
+
+          # (Optional) Restart the Remote Desktop service to ensure changes take effect
+
+          Restart-Service -Name TermService -Force
+
+
+      - name: Create RDP User with Secure Password
+
+        run: |
+
+          Add-Type -AssemblyName System.Security
+
+          $charSet = @{
+
+              Upper   = [char[]](65..90)      # A-Z
+
+              Lower   = [char[]](97..122)     # a-z
+
+              Number  = [char[]](48..57)      # 0-9
+
+              Special = ([char[]](33..47) + [char[]](58..64) +
+
+                         [char[]](91..96) + [char[]](123..126)) # Special characters
+
+          }
+
+          $rawPassword = @()
+
+          $rawPassword += $charSet.Upper | Get-Random -Count 4
+
+          $rawPassword += $charSet.Lower | Get-Random -Count 4
+
+          $rawPassword += $charSet.Number | Get-Random -Count 4
+
+          $rawPassword += $charSet.Special | Get-Random -Count 4
+
+          $password = -join ($rawPassword | Sort-Object { Get-Random })
+
+          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+
+          New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires
+
+          Add-LocalGroupMember -Group "Administrators" -Member "RDP"
+
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
+
+         
+
+          echo "RDP_CREDS=User: RDP | Password: $password" >> $env:GITHUB_ENV
+
+         
+
+          if (-not (Get-LocalUser -Name "RDP")) {
+
+              Write-Error "User creation failed"
+
+              exit 1
+
+          }
+
+
+      - name: Install Tailscale
+
+        run: |
+
+          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+
+          $installerPath = "$env:TEMP\tailscale.msi"
+
+         
+
+          Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
+
+          Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
+
+          Remove-Item $installerPath -Force
+
+
+      - name: Establish Tailscale Connection
+
+        run: |
+
+          # Bring up Tailscale with the provided auth key and set a unique hostname
+
+          & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
+
+         
+
+          # Wait for Tailscale to assign an IP
+
+          $tsIP = $null
+
+          $retries = 0
+
+          while (-not $tsIP -and $retries -lt 10) {
+
+              $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
+
+              Start-Sleep -Seconds 5
+
+              $retries++
+
+          }
+
+         
+
+          if (-not $tsIP) {
+
+              Write-Error "Tailscale IP not assigned. Exiting."
+
+              exit 1
+
+          }
+
+          echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+
+     
+
+      - name: Verify RDP Accessibility
+
+        run: |
+
+          Write-Host "Tailscale IP: $env:TAILSCALE_IP"
+
+         
+
+          # Test connectivity using Test-NetConnection against the Tailscale IP on port 3389
+
+          $testResult = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
+
+          if (-not $testResult.TcpTestSucceeded) {
+
+              Write-Error "TCP connection to RDP port 3389 failed"
+
+              exit 1
+
+          }
+
+          Write-Host "TCP connectivity successful!"
+
+
+      - name: Maintain Connection
+
+        run: |
+
+          Write-Host "`n=== RDP ACCESS ==="
+
+          Write-Host "Address: $env:TAILSCALE_IP"
+
+          Write-Host "Username: RDP"
+
+          Write-Host "Password: $(echo $env:RDP_CREDS)"
+
+          Write-Host "==================`n"
+
+         
+
+          # Keep runner active indefinitely (or until manually cancelled)
+
+          while ($true) {
+
+              Write-Host "[$(Get-Date)] RDP Active - Use Ctrl+C in workflow to terminate"
+
+              Start-Sleep -Seconds 300
+
+          }
